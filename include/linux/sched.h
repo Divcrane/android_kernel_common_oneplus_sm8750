@@ -537,6 +537,10 @@ struct sched_statistics {
 struct sched_bore_stats;
 #endif // CONFIG_SCHED_BORE
 
+struct sched_entity_ext {
+	unsigned char			custom_slice;
+};
+
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
@@ -581,7 +585,7 @@ struct sched_entity {
 #else // !CONFIG_SCHED_BORE
 	ANDROID_KABI_RESERVE(1);
 #endif // CONFIG_SCHED_BORE
-	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_USE(2, struct sched_entity_ext ext);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
 };
