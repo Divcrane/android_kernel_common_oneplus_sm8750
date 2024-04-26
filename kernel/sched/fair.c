@@ -5467,6 +5467,7 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 		    !entity_eligible(cfs_rq, se)) {
 			if (cfs_rq->next == se)
 				cfs_rq->next = NULL;
+			update_load_avg(cfs_rq, se, 0);
 			se->ext.sched_delayed = 1;
 			return false;
 		}
@@ -6889,6 +6890,7 @@ requeue_delayed_entity(struct sched_entity *se)
 		}
 	}
 
+	update_load_avg(cfs_rq, se, 0);
 	se->ext.sched_delayed = 0;
 }
 
