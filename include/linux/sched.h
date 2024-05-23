@@ -539,6 +539,7 @@ struct sched_bore_stats;
 
 struct sched_entity_ext {
 	unsigned char			custom_slice;
+	unsigned char			sched_delayed;
 };
 
 struct sched_entity {
