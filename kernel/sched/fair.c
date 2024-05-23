@@ -5444,18 +5444,37 @@ static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 static __always_inline void return_cfs_rq_runtime(struct cfs_rq *cfs_rq);
 
-static void
+static bool
 dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
-	int action = UPDATE_TG;
+	update_curr(cfs_rq);
 
+	if (flags & DEQUEUE_DELAYED) {
+		SCHED_WARN_ON(!se->ext.sched_delayed);
+	} else {
+		bool sleep = flags & DEQUEUE_SLEEP;
+
+		/*
+		 * DELAY_DEQUEUE relies on spurious wakeups, special task
+		 * states must not suffer spurious wakeups, excempt them.
+		 */
+		if (flags & DEQUEUE_SPECIAL)
+			sleep = false;
+
+		SCHED_WARN_ON(sleep && se->ext.sched_delayed);
+
+		if (sched_feat(DELAY_DEQUEUE) && sleep &&
+		    !entity_eligible(cfs_rq, se)) {
+			if (cfs_rq->next == se)
+				cfs_rq->next = NULL;
+			se->ext.sched_delayed = 1;
+			return false;
+		}
+	}
+
+	int action = UPDATE_TG;
 	if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
 		action |= DO_DETACH;
-
-	/*
-	 * Update run-time statistics of the 'current'.
-	 */
-	update_curr(cfs_rq);
 
 	/*
 	 * When dequeuing a sched_entity, we must:
@@ -5494,8 +5513,13 @@ dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) != DEQUEUE_SAVE)
 		update_min_vruntime(cfs_rq);
 
+	if (flags & DEQUEUE_DELAYED)
+		se->ext.sched_delayed = 0;
+
 	if (cfs_rq->nr_running == 0)
 		update_idle_cfs_rq_clock_pelt(cfs_rq);
+
+	return true;
 }
 
 void set_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
@@ -5894,11 +5918,21 @@ static bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 	idle_task_delta = cfs_rq->idle_h_nr_running;
 	for_each_sched_entity(se) {
 		struct cfs_rq *qcfs_rq = cfs_rq_of(se);
+		int flags;
+
 		/* throttled entity or throttle-on-deactivate */
 		if (!se->on_rq)
 			goto done;
 
-		dequeue_entity(qcfs_rq, se, DEQUEUE_SLEEP);
+		/*
+		 * Abuse SPECIAL to avoid delayed dequeue in this instance.
+		 * This avoids teaching dequeue_entities() about throttled
+		 * entities and keeps things relatively simple.
+		 */
+		flags = DEQUEUE_SLEEP | DEQUEUE_SPECIAL;
+		if (se->ext.sched_delayed)
+			flags |= DEQUEUE_DELAYED;
+		dequeue_entity(qcfs_rq, se, flags);
 
 		if (cfs_rq_is_idle(group_cfs_rq(se)))
 			idle_task_delta = cfs_rq->h_nr_running;
@@ -5988,7 +6022,7 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
 		struct cfs_rq *qcfs_rq = cfs_rq_of(se);
 
 		if (se->on_rq) {
-			SCHED_WARN_ON(se->sched_delayed);
+			SCHED_WARN_ON(se->ext.sched_delayed);
 			break;
 		}
 		enqueue_entity(qcfs_rq, se, ENQUEUE_WAKEUP);
@@ -6832,14 +6866,14 @@ requeue_delayed_entity(struct sched_entity *se)
 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
 	/*
-	 * se->sched_delayed should imply: se->on_rq == 1.
+	 * se->ext.sched_delayed should imply: se->on_rq == 1.
 	 * Because a delayed entity is one that is still on
 	 * the runqueue competing until elegibility.
 	 */
-	SCHED_WARN_ON(!se->sched_delayed);
+	SCHED_WARN_ON(!se->ext.sched_delayed);
 	SCHED_WARN_ON(!se->on_rq);
 
-	se->sched_delayed = 0;
+	se->ext.sched_delayed = 0;
 }
 
 /*
@@ -6881,7 +6915,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 	for_each_sched_entity(se) {
 		if (se->on_rq) {
-			if (se->sched_delayed)
+			if (se->ext.sched_delayed)
 				requeue_delayed_entity(se);
 			break;
 		}
@@ -6961,6 +6995,7 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 {
 	bool was_sched_idle = sched_idle_rq(rq);
 	bool task_sleep = flags & DEQUEUE_SLEEP;
+	bool task_delayed = flags & DEQUEUE_DELAYED;
 	struct task_struct *p = NULL;
 	int idle_h_nr_running = 0;
 	int h_nr_running = 0;
@@ -6974,7 +7009,13 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
-		dequeue_entity(cfs_rq, se, flags);
+
+		if (!dequeue_entity(cfs_rq, se, flags)) {
+			if (p && &p->se == se)
+				return -1;
+
+			break;
+		}
 
 		cfs_rq->h_nr_running -= h_nr_running;
 		cfs_rq->idle_h_nr_running -= idle_h_nr_running;
@@ -6999,6 +7040,7 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 			break;
 		}
 		flags |= DEQUEUE_SLEEP;
+		flags &= ~(DEQUEUE_DELAYED | DEQUEUE_SPECIAL);
 	}
 
 	trace_android_rvh_dequeue_task_fair(rq, p, flags);
@@ -7026,6 +7068,14 @@ static int dequeue_entities(struct rq *rq, struct sched_entity *se, int flags)
 	if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
 		rq->next_balance = jiffies;
 
+	if (p && task_delayed) {
+		SCHED_WARN_ON(!task_sleep);
+		SCHED_WARN_ON(p->on_rq != 1);
+
+		/* Fix-up what dequeue_task_fair() skipped */
+		hrtick_update(rq);
+	}
+
 	return 1;
 }
 
@@ -7048,8 +7098,10 @@ static bool __dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	}
 #endif // CONFIG_SCHED_BORE
 
-	if (dequeue_entities(rq, &p->se, flags) < 0)
+	if (dequeue_entities(rq, &p->se, flags) < 0) {
+		util_est_update(&rq->cfs, p, DEQUEUE_SLEEP);
 		return false;
+	}
 
 	util_est_update(&rq->cfs, p, flags & DEQUEUE_SLEEP);
 	hrtick_update(rq);
@@ -13076,6 +13128,11 @@ static void set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
 		/* ensure bandwidth has been allocated on our new cfs_rq */
 		account_cfs_rq_runtime(cfs_rq, 0);
 	}
+
+	if (!first)
+		return;
+
+	SCHED_WARN_ON(se->ext.sched_delayed);
 }
 
 void init_cfs_rq(struct cfs_rq *cfs_rq)
