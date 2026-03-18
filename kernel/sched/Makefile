@@ -33,6 +33,7 @@ obj-y += fair.o
 obj-y += build_policy.o
 obj-y += build_utility.o
 obj-y += bore.o
+
 # Cambyses: cambyses.c is #included from fair.c (needs access to static functions).
 # Cambyses SIMD: Separate TUs with ISA-specific flags.
 # FPU_KILL_FLAGS must be removed first (kernel builds with -mno-sse etc.),
@@ -68,4 +69,5 @@ CFLAGS_cambyses_simd_neon.o += $(CC_FLAGS_FPU) \
 endif # CONFIG_ARM64
 
 endif # CONFIG_SCHED_CAMBYSES_SIMD
+
 obj-$(CONFIG_ANDROID_VENDOR_HOOKS) += vendor_hooks.o
